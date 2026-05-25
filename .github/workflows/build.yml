@@ -4,6 +4,17 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号 (例: v1.0.1)'
+        required: true
+        type: string
+      ref:
+        description: '私有仓库的 Tag/分支 (例: v1.0.1)，默认等于版本号'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: write
@@ -22,9 +33,18 @@ jobs:
         goarch: [amd64, arm64]
 
     steps:
-      - name: Set Version
+      - name: Set Version & Ref
         id: meta
-        run: echo "version=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "version=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+            echo "ref=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${{ inputs.version }}" >> $GITHUB_OUTPUT
+            REF="${{ inputs.ref }}"
+            [ -z "$REF" ] && REF="${{ inputs.version }}"
+            echo "ref=$REF" >> $GITHUB_OUTPUT
+          fi
 
       # ---- 拉取私有仓库源码 ----
       - name: Checkout Private Repo
@@ -32,7 +52,7 @@ jobs:
         with:
           repository: Positive521/AutoGithubHosts
           token: ${{ secrets.PRIVATE_REPO_PAT }}
-          ref: ${{ github.ref_name }}
+          ref: ${{ steps.meta.outputs.ref }}
 
       # ---- 安装 Go ----
       - name: Setup Go
@@ -78,10 +98,19 @@ jobs:
       contents: write
 
     steps:
-      # ---- 解析版本号 ----
-      - name: Set Version
+      # ---- 解析版本号与 Ref ----
+      - name: Set Version & Ref
         id: meta
-        run: echo "version=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "version=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+            echo "ref=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${{ inputs.version }}" >> $GITHUB_OUTPUT
+            REF="${{ inputs.ref }}"
+            [ -z "$REF" ] && REF="${{ inputs.version }}"
+            echo "ref=$REF" >> $GITHUB_OUTPUT
+          fi
 
       # ---- 拉取私有仓库 (获取 config.json) ----
       - name: Checkout Private Repo
@@ -89,7 +118,7 @@ jobs:
         with:
           repository: Positive521/AutoGithubHosts
           token: ${{ secrets.PRIVATE_REPO_PAT }}
-          ref: ${{ github.ref_name }}
+          ref: ${{ steps.meta.outputs.ref }}
           path: _source
 
       # ---- 下载全部构建产物 ----
