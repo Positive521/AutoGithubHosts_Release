@@ -1,0 +1,10 @@
+# 公开仓库仅保留工作流文件和 README，其他一切忽略
+*
+!/.github/
+/.github/*
+!/.github/workflows/
+/.github/workflows/*
+!/.github/workflows/*.yml
+!/.github/workflows/*.yaml
+!/.gitignore
+!README.md

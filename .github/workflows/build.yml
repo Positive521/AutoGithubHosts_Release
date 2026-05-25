@@ -1,0 +1,178 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  # ============================================================
+  #  构建矩阵 — 6 个平台/架构组合
+  # ============================================================
+  build-matrix:
+    name: Build ${{ matrix.goos }}_${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goos:   [windows, linux, darwin]
+        goarch: [amd64, arm64]
+
+    steps:
+      - name: Set Version
+        id: meta
+        run: echo "version=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+
+      # ---- 拉取私有仓库源码 ----
+      - name: Checkout Private Repo
+        uses: actions/checkout@v4
+        with:
+          repository: Positive521/AutoGithubHosts
+          token: ${{ secrets.PRIVATE_REPO_PAT }}
+          ref: ${{ github.ref_name }}
+
+      # ---- 安装 Go ----
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      # ---- 决定文件扩展名 ----
+      - name: Determine File Extension
+        id: ext
+        run: |
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            echo "ext=.exe" >> $GITHUB_OUTPUT
+          else
+            echo "ext=" >> $GITHUB_OUTPUT
+          fi
+
+      # ---- 交叉编译 ----
+      - name: Build Binary
+        run: |
+          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
+          go build -ldflags="-s -w \
+            -X main.Version=${{ steps.meta.outputs.version }} \
+            -X main.DownloadURL=https://github.com/Positive521/AutoGithubHosts_Release" \
+          -o "AutoGithubHosts_${{ matrix.goos }}_${{ matrix.goarch }}${{ steps.ext.outputs.ext }}" .
+
+      # ---- 上传构建产物 ----
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary_${{ matrix.goos }}_${{ matrix.goarch }}
+          path: AutoGithubHosts_${{ matrix.goos }}_${{ matrix.goarch }}${{ steps.ext.outputs.ext }}
+          retention-days: 7
+
+  # ============================================================
+  #  发布阶段 — 汇总产物并创建 GitHub Release
+  # ============================================================
+  release:
+    name: Create GitHub Release
+    needs: build-matrix
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      # ---- 解析版本号 ----
+      - name: Set Version
+        id: meta
+        run: echo "version=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+
+      # ---- 拉取私有仓库 (获取 config.json) ----
+      - name: Checkout Private Repo
+        uses: actions/checkout@v4
+        with:
+          repository: Positive521/AutoGithubHosts
+          token: ${{ secrets.PRIVATE_REPO_PAT }}
+          ref: ${{ github.ref_name }}
+          path: _source
+
+      # ---- 下载全部构建产物 ----
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: binary_*
+          path: dist/
+          merge-multiple: true
+
+      # ---- 打包 ZIP/tar.gz + SHA256 ----
+      - name: Package & Checksum
+        run: |
+          VERSION="${{ steps.meta.outputs.version }}"
+          mkdir -p release
+
+          # 1. 生成 SHA256 校验文件
+          cd dist
+          sha256sum * > ../release/SHA256SUMS.txt
+          cd ..
+
+          # 2. 每个平台打包 (含 conf/config.json)
+          for binary in dist/*; do
+            name=$(basename "$binary")
+            pkg_dir="tmp_pkg/AutoGithubHosts_${name%.*}"
+            mkdir -p "${pkg_dir}/conf" "${pkg_dir}/log"
+
+            cp "$binary"                    "${pkg_dir}/"
+            cp _source/config.json          "${pkg_dir}/conf/config.json"
+
+            pushd tmp_pkg > /dev/null
+            if [[ "$name" == *.exe ]]; then
+              zip -qr "../release/AutoGithubHosts_${VERSION}_${name%.*}.zip" "AutoGithubHosts_${name%.*}/"
+            else
+              tar -czf "../release/AutoGithubHosts_${VERSION}_${name%.*}.tar.gz" "AutoGithubHosts_${name%.*}/"
+            fi
+            popd > /dev/null
+            rm -rf tmp_pkg
+          done
+
+          # 3. 单独二进制也放入 release
+          cp dist/* release/
+
+          echo "--- Release Assets ---"
+          ls -lh release/
+
+      # ---- 创建 GitHub Release ----
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.version }}
+          name: ${{ steps.meta.outputs.version }}
+          body: |
+            ## AutoGithubHosts ${{ steps.meta.outputs.version }}
+
+            GitHub Hosts 自动更新工具 — 跨平台 · 多架构 · 零依赖
+
+            ### 下载
+
+            | 平台 | 架构 | 独立二进制 | 完整包(含配置) |
+            |---|---|---|---|
+            | Windows | amd64 | `AutoGithubHosts_windows_amd64.exe` | `.zip` |
+            | Windows | arm64 | `AutoGithubHosts_windows_arm64.exe` | `.zip` |
+            | Linux   | amd64 | `AutoGithubHosts_linux_amd64`      | `.tar.gz` |
+            | Linux   | arm64 | `AutoGithubHosts_linux_arm64`      | `.tar.gz` |
+            | macOS   | amd64 | `AutoGithubHosts_darwin_amd64`     | `.tar.gz` |
+            | macOS   | arm64 | `AutoGithubHosts_darwin_arm64`     | `.tar.gz` |
+
+            ### 校验
+
+            下载后可使用 `SHA256SUMS.txt` 验证文件完整性：
+            ```bash
+            sha256sum -c SHA256SUMS.txt
+            ```
+
+            ### 使用说明
+
+            1. 下载对应平台的二进制文件
+            2. 在同目录创建 `conf/config.json`（或直接下载完整包）
+            3. **Windows** — 以管理员身份运行
+            4. **Linux/macOS** — `sudo ./AutoGithubHosts`
+
+          files: |
+            release/*
+          draft: false
+          prerelease: false
