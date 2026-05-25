@@ -176,3 +176,12 @@ jobs:
             release/*
           draft: false
           prerelease: false
+
+      # ---- 删除自动生成的 Source code 归档包 ----
+      - name: Remove Auto-generated Source Archives
+        run: |
+          for name in "Source code (zip)" "Source code (tar.gz)"; do
+            gh release delete-asset "${{ steps.meta.outputs.version }}" "$name" -y 2>/dev/null || true
+          done
+        env:
+          GH_TOKEN: ${{ github.token }}
